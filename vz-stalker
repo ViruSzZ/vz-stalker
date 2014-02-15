@@ -1,0 +1,129 @@
+#!/usr/bin/env perl
+#
+# program: vz-stalker
+# author: d.stavrovski
+#
+# set-up:
+#   mkdir -p /root/vz-stalker /var/log/vz-stalker
+#   yum install cpan make patch and
+#   build Sys::Statistics::Linux' from cpan or
+#   rpm -Uvh ftp://ftp.pbone.net/mirror/ftp.centos.org/6.4/updates/$(uname -m)/Packages/perl-Time-HiRes-1.9721-130.el6_4.$(uname -m).rpm
+#   rpm -Uvh ftp://ftp.pbone.net/mirror/download.fedora.redhat.com/pub/fedora/epel/6/x86_64/perl-Sys-Statistics-Linux-0.59-3.el6.noarch.rpm
+#
+#   apt-get install libsys-statistics-linux-perl
+#
+#	init script => http://tinyurl.com/bsjketm
+use warnings;
+use strict;
+use VZ::Stalker;
+#use Data::Dumper;
+
+## SCRIPT NAME
+$0='vz-stalker';
+
+# -------------------------------- CONFIG -------------------------------- #
+my $crit_trigger    =  60;  # stop sending emails above this load
+my $load_trigger    =  20;  # avg_1 trigger
+my $ram_trigger     =  10;  # free RAM in MB
+my $num_proc        =  30;  # number of proc pids to be shown/parsed
+my $homedir         =  '/'; # chroot to given dir
+my $ppidfile        =  '/var/run/vz-stalker.pid';
+my $subject			=  'VZ-Proceses';
+my $from			=  'vz-stalker@host.domain.tld';
+my $name			=  'VZ-Stalker';
+my $to				=  'alerts@domain.tld';
+
+#### ------------------------------ PATHS ------------------------------ ####
+my $log_dir         =   '/var/log/vz-stalker/'; # closing slash is required
+
+# -------------------------------- globals -------------------------------- #
+my $counter = 0;
+
+# -------------------------------- PROGRAM -------------------------------- #
+die("$log_dir does not exist\n") if(! -e $log_dir); daemonize($homedir, $ppidfile);
+
+my $p = VZ::Stalker->new();
+
+while(1)
+{
+	# call the get_load method
+	my $stat = $p->get_load;
+
+	if( $stat->{load1} > $load_trigger || $stat->{ram_free} < $ram_trigger )
+	{
+		# if it is critical
+		if( $stat->{load1} > $crit_trigger )
+		{
+			$stat = $p->get_sys_stats;
+				my $email_msg = $stat->{host_table} . "\n";
+			$stat = $p->get_vzlist;
+				$email_msg .= $stat->{vzlist_table} . "\n";
+			$stat = $p->get_pid_stats;
+				$email_msg .= $stat->{proc_table} . "\n";
+
+			logger("$email_msg"); undef $email_msg;
+
+            sleep(20);
+		}
+		else
+		{
+			$stat = $p->get_sys_stats;
+				my $email_msg = $stat->{host_table} . "\n";
+			$stat = $p->get_vzlist;
+				$email_msg .= $stat->{vzlist_table} . "\n";
+			$stat = $p->get_pid_stats;
+				$email_msg .= $stat->{proc_table} . "\n";
+
+			logger("$email_msg");
+
+			send_mail($from,$name,$to,$subject,$email_msg);
+
+			undef $email_msg;
+		}
+
+		# release some pages
+		undef $stat;
+
+		if( $counter <= 2 ) { $counter+=1;}
+		else { $counter+=1; sleep(20); }
+
+	} else { $counter = 0 }
+
+	$counter = 0 if $counter > 5;
+
+    sleep(20);
+}
+
+# -------------------------------- SUB ROUTINES -------------------------------- #
+sub logger {
+    ## example: /var/log/vz-stalker/4-24-2013.log
+    my $s = shift;
+    my ($logsec,$logmin,$loghour,$logmday,$logmon,$logyear,$logwday,$logyday,$logisdst) = localtime(time);
+    $logyear = $logyear+1900;
+    my $logtimestamp = sprintf("DATE: %4d-%02d-%02d %02d:%02d:%02d",$logyear,$logmon+1,$logmday,$loghour,$logmin,$logsec);
+    $logmon++;
+    my $logfile="$log_dir$logmon-$logmday-$logyear.log";
+    my $fh; my $deli = q[x] x 116;
+    open($fh, '>>', "$logfile") or warn "$logfile: $!";
+    print $fh "$deli\n$logtimestamp\n$deli\n\n$s\n\n";
+    close($fh);
+}
+sub daemonize {
+    my ($chdir,$pidfile) = @_;
+    chdir($chdir) or die("cannot chdir to $chdir: $!\n");
+    defined(my $cpid = fork) or die("cannot fork: $!\n");
+    exit if $cpid; umask 0;
+    close(STDIN); close(STDOUT); close(STDERR);
+    open(FILE,">$pidfile") or die("cannot open for writing $pidfile: $!\n");
+        print FILE $$;
+    close(FILE);
+}
+sub send_mail {
+	my ($from,$name,$to,$subject,$msg) = @_;
+    open(SM,"|/usr/sbin/sendmail -t") or die("cannot open sendmail: $!\n");
+    print SM "From: \"$name\" <$from >\n";
+    print SM "To: $to\n";
+    print SM "Subject: $subject\n\n";
+    print SM "$msg\n";
+    close(SM);
+}
